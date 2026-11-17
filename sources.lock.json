@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "release": "2026.11.17",
+  "release": "2026.11.17.2",
   "sources": [
     {"id":"seep","url":"https://github.com/angusdevgo/Seep-Reverse-Lab.git","branch":"main","commit":"1ea9399ccb4dd8db5849a5ff62d963bf4abbe35e","version":"1.15.0","license":"GPL-3.0-or-later"},
     {"id":"apk","url":"https://github.com/Angel-Gril/apk-reverse-new.git","branch":"main","commit":"56fee1319b0ac4948083a5158d38f15e3fbc0f71","skill":"skills/apk-reverse","license":"MIT"},

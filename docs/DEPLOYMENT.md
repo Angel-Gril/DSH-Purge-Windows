@@ -4,6 +4,8 @@
 
 这是部署编排仓库，不把四个 Git 仓库做破坏性覆盖。下载的原始源码位于 `<Root>\sources\<id>\<commit>`，每次部署的插件/技能合成产物在 `<Root>\deployments\<时间-随机号>`。Git 仓库本身只有脚本、锁定清单和文档，不含你的密钥、会话、样本、IDA 二进制或许可证。
 
+主入口保持 DSH + Purge。`-WithPi` 附加独立编程与工作台入口；`-Modules` 可只选 PI/Seep/APK/EXE，不拉未选择的源。PI 独立配置在 `pi/agent`，会话在 `pi/sessions`。组件依赖、具体启动、模型配置与开发方式见 [USAGE.md](USAGE.md)。PI 需 Node 22.19+；默认纯 DSH 仍为 22.18+。
+
 ```text
 <Root>\
   active.json                 当前部署的路径和选项，无 API key

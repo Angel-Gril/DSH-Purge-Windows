@@ -24,6 +24,27 @@ REPO = Path(__file__).resolve().parents[1]
 BEGIN = '# BEGIN DSH-WINDOWS-WORKBENCH v1'
 END = '# END DSH-WINDOWS-WORKBENCH v1'
 PROFILE_FILES = ('package.json', 'pnpm-lock.yaml', 'cordis.patch.yml', 'pnpm-workspace.yaml')
+DEFAULT_MODULES = ['dsh', 'purge', 'seep', 'apk', 'exe']
+MODULE_ORDER = ['dsh', 'purge', 'pi', 'seep', 'apk', 'exe']
+
+
+def resolve_modules(value=None, with_pi=False):
+    selected = set(DEFAULT_MODULES if value is None else [x.strip().lower() for x in value.split(',')])
+    if with_pi:
+        selected.add('pi')
+    if not selected.issubset(MODULE_ORDER) or not selected.intersection({'dsh', 'pi'}):
+        raise RuntimeError('Select a host (dsh or pi) and modules: dsh,purge,pi,seep,apk,exe')
+    if 'purge' in selected and 'dsh' not in selected:
+        raise RuntimeError('Purge requires the DSH host')
+    if 'dsh' in selected:
+        selected.add('purge')  # DSH + Purge is this workbench host unit.
+        if selected.intersection({'apk', 'exe'}):
+            selected.add('seep')  # Native DSH skill connector.
+    return [x for x in MODULE_ORDER if x in selected]
+
+
+def modules_of(state):
+    return state.get('modules', DEFAULT_MODULES)
 
 
 def read_json(file: Path):
@@ -41,13 +62,13 @@ def digest(file: Path):
     return hashlib.sha256(file.read_bytes()).hexdigest()
 
 
-def run(args, *, cwd=None, env=None, capture=False, timeout=1800, check=True):
+def run(args, *, cwd=None, env=None, capture=False, timeout=1800, check=True, interactive=False):
     argv = [str(x) for x in args]
     # Windows .cmd needs CreateProcess's standard handling, never shell=True.
     process = subprocess.Popen(argv, cwd=cwd, env=env, text=True, encoding='utf-8', errors='replace',
                                stdout=subprocess.PIPE if capture else sys.stdout,
                                stderr=subprocess.PIPE if capture else sys.stderr,
-                               creationflags=0x08000000 if os.name == 'nt' else 0)
+                               creationflags=0x08000000 if os.name == 'nt' and not interactive else 0)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -97,7 +118,7 @@ def merge_patch(original, block):
 
 def profile_block(state):
     q = lambda x: json.dumps(str(x), ensure_ascii=False)
-    return f'''- id: seep-workbench-boot
+    block = f'''- id: seep-workbench-boot
   disabled: false
   config:
     repoRoot: {q(state['sources']['seep'])}
@@ -107,7 +128,8 @@ def profile_block(state):
     labGate: true
     enableIda: {str(state['options']['with_ida']).lower()}
     enablePlaywright: {str(state['options']['with_playwright']).lower()}
-- id: dsh-purge
+''' if 'seep' in state['plugins'] else ''
+    return block + '''- id: dsh-purge
   disabled: false
   config:
     enabled: true
@@ -216,6 +238,19 @@ def install_python(root):
     return python
 
 
+def install_node_bundle(root, bundle):
+    source = REPO / bundle
+    target = root / 'runtimes' / (bundle + '-' + digest(source / 'package-lock.json')[:16])
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ('package.json', 'package-lock.json'):
+        shutil.copy2(source / name, target / name)
+    if not (target / 'complete.json').exists():
+        print('[runtime] Installing locked ' + bundle, flush=True)
+        run([executable('npm'), 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], cwd=target, timeout=3600)
+        save_json(target / 'complete.json', {'lockSha256': digest(source / 'package-lock.json')})
+    return target
+
+
 def copy_tree(source, destination):
     shutil.copytree(source, destination, ignore=shutil.ignore_patterns('.git', 'node_modules', '__pycache__',
                                                                      '.venv', 'venv', '*.pyc', '.env', '.env.*'))
@@ -264,13 +299,16 @@ def build_generation(root, sources, runtime, python, options):
     generation = root / 'deployments' / (time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
     content = generation / 'content'
     content.mkdir(parents=True)
-    copy_tree(sources['seep'] / 'Tool/skill', content / 'skill')
+    if 'seep' in sources:
+        copy_tree(sources['seep'] / 'Tool/skill', content / 'skill')
     nested = content / 'skill/safe-skills'
     if nested.exists():
         nested.rename(content / 'safe-skills')
     # Same-name Seep skills are retained in source; selected Angel-Gril skills win in the overlay.
     mapping = {}
     for item in ('apk', 'exe'):
+        if item not in sources:
+            continue
         name = item + '-reverse'
         target = overlay_skill(content, generation, sources[item] / 'skills' / name, name)
         if (sources[item] / 'LICENSE').is_file() and not (target / 'LICENSE').exists():
@@ -288,8 +326,26 @@ def build_generation(root, sources, runtime, python, options):
     save_json(content / 'sources.json', {'overrides': mapping, 'skills': names})
     plugins = generation / 'plugins'
     plugins.mkdir()
-    seep = plugins / 'seep-lab'
-    copy_tree(sources['seep'] / 'packages/seep-lab', seep)
+    selected_plugins = {}
+    if 'dsh' in options['modules'] and 'seep' in sources:
+        seep = plugins / 'seep-lab'
+        prepare_seep_plugin(sources['seep'], seep, runtime)
+        selected_plugins['seep'] = str(seep)
+    if 'purge' in sources:
+        purge = plugins / 'dsh-purge-community'
+        copy_tree(sources['purge'], purge)
+        run([executable('npm'), 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], cwd=purge)
+        selected_plugins['purge'] = str(purge)
+    return {'schemaVersion': 2, 'generation': str(generation), 'root': str(root),
+            'modules': options['modules'],
+            'sources': {k: str(v) for k, v in sources.items()}, 'runtime': str(runtime) if runtime else None,
+            'cli': str(runtime / 'node_modules/@deepseek-ai/dsh/lib/bin.js') if runtime else None,
+            'python': str(python), 'content': str(content), 'plugins': selected_plugins,
+            'node': executable('node'), 'options': options, 'createdAt': time.time()}
+
+
+def prepare_seep_plugin(source, seep, runtime):
+    copy_tree(source / 'packages/seep-lab', seep)
     # Local compatibility adapter: retain the native UI/lab gate/skills, pin MCP commands.
     # Strict source anchors fail closed when upstream changes instead of guessing.
     file = seep / 'lib/index.js'
@@ -304,14 +360,6 @@ def build_generation(root, sources, runtime, python, options):
     text = text.replace("'@playwright/mcp@latest'", "'@playwright/mcp@0.0.85'")
     file.write_text(text, encoding='utf-8')
     link_host_dependencies(seep, runtime)
-    purge = plugins / 'dsh-purge-community'
-    copy_tree(sources['purge'], purge)
-    run([executable('npm'), 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], cwd=purge)
-    return {'schemaVersion': 1, 'generation': str(generation), 'root': str(root),
-            'sources': {k: str(v) for k, v in sources.items()}, 'runtime': str(runtime),
-            'cli': str(runtime / 'node_modules/@deepseek-ai/dsh/lib/bin.js'),
-            'python': str(python), 'content': str(content), 'plugins': {'seep': str(seep), 'purge': str(purge)},
-            'node': executable('node'), 'options': options, 'createdAt': time.time()}
 
 
 def read_asar_json(file, relative):
@@ -409,12 +457,14 @@ def environment(state, surface='web'):
     env = dict(os.environ)
     env.update({'DSH_HOME': state['dshHome'], 'DSH_SURFACE': surface, 'DSH_PROFILE': surface,
                 'PURGE_PROFILE_DIR': str(Path(state['dshHome']) / 'profiles' / surface),
-                'SEEP_ROOT': state['sources']['seep'], 'SEEP_PYTHON': state['python'],
+                'SEEP_PYTHON': state['python'],
                 'SEEP_CONTENT_ROOT': state['content'], 'SEEP_DSH_PROFILE': surface,
                 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1',
                 'APKREV_TOOLS': str(Path(state['root']) / 'tools/apk'),
                 'EXEREV_TOOLS': str(Path(state['root']) / 'tools/exe')})
-    safe = Path(state['sources']['seep']) / 'Tool/mcp/Tool/safe'
+    safe = Path(state['sources'].get('seep', str(Path(state['root']) / 'tools'))) / 'Tool/mcp/Tool/safe'
+    if 'seep' in state['sources']:
+        env['SEEP_ROOT'] = state['sources']['seep']
     tool_paths = [str(Path(state['runtime']) / 'node_modules/.bin'),
                   str(Path(state['python']).parent), str(safe / 'radare2/bin'), str(safe / 'jadx/bin'),
                   str(Path(state['root']) / 'tools/capabilities/bin')]
@@ -509,6 +559,14 @@ def snapshot(state, root, previous):
                 target = folder / profile / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(file, target)
+    record['piFiles'] = {}
+    if 'pi' in modules_of(state) or (previous and 'pi' in modules_of(previous)):
+        for name in ('settings.json', 'mcp.json', 'workbench-managed.json'):
+            file = root / 'pi/agent' / name
+            record['piFiles'][name] = file.exists()
+            if file.exists():
+                (folder / 'pi').mkdir(exist_ok=True)
+                shutil.copy2(file, folder / 'pi' / name)
     save_json(folder / 'snapshot.json', record)
     return folder
 
@@ -531,6 +589,13 @@ def restore_snapshot(folder, state):
                 file.unlink(missing_ok=True)
         if info['files'].get('package.json'):
             dsh(state, ['plugin', '--profile', profile, 'install', '--frozen-lockfile'], profile)
+    for name, existed in record.get('piFiles', {}).items():
+        file = Path(state['root']) / 'pi/agent' / name
+        if existed:
+            file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(folder / 'pi' / name, file)
+        else:
+            file.unlink(missing_ok=True)
     active = Path(state['root']) / 'active.json'
     if record['previousState']:
         save_json(active, record['previousState'])
@@ -545,7 +610,11 @@ def configure_profiles(state):
         package = base / 'package.json'
         if package.exists() and 'dsh-purge' in read_json(package).get('dependencies', {}):
             dsh(state, ['plugin', '--profile', profile, 'remove', 'dsh-purge'], profile)
-        for plugin in ('seep', 'purge'):
+        # Remove only a previously managed connector when the selection changes.
+        for name in state.get('removeBundles', []):
+            if package.exists() and name in read_json(package).get('dependencies', {}):
+                dsh(state, ['plugin', '--profile', profile, 'remove', name], profile)
+        for plugin in state['plugins']:
             dsh(state, ['plugin', '--profile', profile, 'add', '-w', state['plugins'][plugin]], profile)
         patch = base / 'cordis.patch.yml'
         original = patch.read_text(encoding='utf-8-sig') if patch.exists() else ''
@@ -562,16 +631,165 @@ def configure_profiles(state):
             temp.unlink(missing_ok=True)
         package_data = read_json(package)
         bundles = package_data.get('dsh', {}).get('profile', {}).get('bundles', [])
-        if not {'seep-lab', 'dsh-purge-community'}.issubset(set(bundles)):
+        expected = {'seep': 'seep-lab', 'purge': 'dsh-purge-community'}
+        if not {expected[p] for p in state['plugins']}.issubset(set(bundles)):
             raise RuntimeError(f'{profile}: plugin dependencies exist but bundle registration is incomplete')
         if profile == 'web':
             # Composition is validation only. Its private output is discarded.
             dsh(state, ['--profile', profile, '--dump-config'], profile, capture=True)
 
 
+def pi_modes(state):
+    return ['coding'] + [x for x in ('seep', 'apk', 'exe') if x in state['sources']] + (
+        ['all'] if state['sources'] else [])
+
+
+def pi_version(state):
+    expected = read_json(Path(state['pi']['runtime']) / 'package.json')['dependencies']['@earendil-works/pi-coding-agent']
+    actual = run([state['node'], state['pi']['cli'], '--version'],
+                 env=dict(pi_environment(state, 'coding'), PI_OFFLINE='1'), capture=True).stdout.strip()
+    if actual != expected:
+        raise RuntimeError('PI runtime version differs from its locked package')
+    return actual
+
+
+def pi_mcp_check(state):
+    result = run([state['node'], state['pi']['cli'], 'mcp', 'list', '--json'],
+                 env=pi_environment(state, 'all'), cwd=Path(state['root']) / 'pi',
+                 capture=True, timeout=600, check=False)
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:
+        raise RuntimeError('PI native MCP returned an invalid report; private output omitted') from None
+    required = read_json(Path(state['pi']['agent']) / 'workbench-managed.json')['servers']
+    summary, failed = [], []
+    for server in data.get('servers', []):
+        name, status = server['name'], server['state']
+        summary.append({'name': name, 'state': status, 'tools': len(server.get('tools', []))})
+        if server.get('enabled', True) and status != 'connected':
+            # Never expose raw errors, transport arguments, URLs or credential-bearing headers.
+            error = str(server.get('error', ''))
+            category = ('timeout' if re.search(r'timeout|timed out', error, re.I) else
+                        'missing-entry' if re.search(r'ENOENT|MODULE_NOT_FOUND', error) else 'connection')
+            failed.append(name + '=' + status + '/' + category)
+    for name in required:
+        if not any(s['name'] == name and s['state'] == 'connected' and s['tools'] for s in summary):
+            if not any(item.startswith(name + '=') for item in failed):
+                failed.append(name + '=missing-tools')
+    if result.returncode or data.get('errors') or failed:
+        raise RuntimeError('PI native MCP failed: ' + ', '.join(failed or ['configuration-or-cli']))
+    return {'servers': summary, 'configErrors': 0}
+
+
+def configure_pi(state):
+    root = Path(state['root'])
+    agent = root / 'pi/agent'
+    agent.mkdir(parents=True, exist_ok=True)
+    settings_file, mcp_file = agent / 'settings.json', agent / 'mcp.json'
+    settings = read_json(settings_file) if settings_file.exists() else {}
+    mcp = read_json(mcp_file) if mcp_file.exists() else {'mcpServers': {}}
+    marker = agent / 'workbench-managed.json'
+    old = read_json(marker) if marker.exists() else {}
+    extension = Path(state['generation']) / 'pi-workbench.mjs'
+    shutil.copy2(REPO / 'scripts/pi-workbench.mjs', extension)
+    extensions = [x for x in settings.get('extensions', []) if x not in old.get('extensions', [])]
+    settings['extensions'] = extensions + [str(extension)]
+    settings.setdefault('defaultTools', ['read', 'powershell', 'edit', 'write', 'grep', 'find', 'ls'])
+    servers = mcp.setdefault('mcpServers', {})
+    # The names are reserved only after first registration; no overwriting user servers.
+    managed = {}
+    if 'seep' in state['sources']:
+        source = state['sources']['seep']
+        managed = {
+            'seep': {'command': state['python'], 'args': [str(Path(source) / 'Tool/mcp/seep_mcp_server.py')],
+                     'cwd': source, 'env': {'PYTHONIOENCODING': 'utf-8'}, 'exposure': 'deferred'},
+            'js-reverse': {'command': state['node'], 'args': [str(Path(state['mcpRuntime']) /
+                           'node_modules/js-reverse-mcp/build/src/index.js')], 'cwd': source, 'exposure': 'deferred'}}
+        if state.get('options', {}).get('with_ida'):
+            managed['ida'] = {'command': state['python'], 'args': ['-m', 'ida_pro_mcp.idalib_supervisor'],
+                              'cwd': source, 'exposure': 'deferred'}
+        if state.get('options', {}).get('with_playwright'):
+            managed['playwright'] = {'command': executable('npx'),
+                                     'args': ['-y', '@playwright/mcp@0.0.85'], 'exposure': 'deferred'}
+    for name in managed:
+        if name in servers and name not in old.get('servers', {}):
+            raise RuntimeError('PI MCP name belongs to the user: ' + name + '; rename it before installing')
+    for name, entry in old.get('servers', {}).items():
+        if name in servers and servers[name] != entry:
+            raise RuntimeError('Managed PI MCP entry was edited: ' + name + '; retain it under a user-owned name')
+        servers.pop(name, None)
+    servers.update(managed)
+    save_json(settings_file, settings)
+    save_json(mcp_file, mcp)
+    save_json(marker, {'extensions': [str(extension)], 'servers': managed})
+
+
+def pi_environment(state, mode):
+    env = dict(os.environ)
+    # No DSH profile or patch target is inherited by a standalone PI process.
+    for name in list(env):
+        if name.startswith(('DSH_', 'PURGE_', 'SEEP_')):
+            env.pop(name)
+    env.update({'PI_CODING_AGENT_DIR': state['pi']['agent'],
+                'PI_CODING_AGENT_SESSION_DIR': str(Path(state['root']) / 'pi/sessions' / mode),
+                'PI_TELEMETRY': '0', 'PI_SKIP_VERSION_CHECK': '1',
+                'WORKBENCH_MODE': mode, 'WORKBENCH_ROOT': state['root'],
+                'SEEP_CONTENT_ROOT': state['content'], 'SEEP_PYTHON': state['python'],
+                'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1',
+                'APKREV_TOOLS': str(Path(state['root']) / 'tools/apk'),
+                'EXEREV_TOOLS': str(Path(state['root']) / 'tools/exe')})
+    for name in ('APKREV_TOOLS', 'EXEREV_TOOLS'):
+        if os.environ.get(name):
+            env[name] += os.pathsep + os.environ[name]
+    paths = [str(Path(state['python']).parent), str(Path(state['root']) / 'tools/capabilities/bin')]
+    if 'seep' in state['sources']:
+        env['SEEP_ROOT'] = state['sources']['seep']
+        safe = Path(state['sources']['seep']) / 'Tool/mcp/Tool/safe'
+        paths += [str(safe / 'radare2/bin'), str(safe / 'jadx/bin')]
+        env['SEEP_NODE'] = state['node']
+        for name in ('APKREV_TOOLS', 'EXEREV_TOOLS'):
+            env[name] += os.pathsep + str(safe)
+        for name in ('SEEP_ANDROID_TOOLBOX', 'SEEP_WEB_TOOLBOX'):
+            env[name] = str(Path(state['root']) / 'tools/capabilities')
+    if state.get('options', {}).get('ida_root'):
+        env['SEEP_IDA_ROOT'] = state['options']['ida_root']
+    env['PATH'] = os.pathsep.join(paths) + os.pathsep + env.get('PATH', '')
+    return env
+
+
+def start_pi(args):
+    state = load_state(args.root)
+    if 'pi' not in modules_of(state):
+        raise RuntimeError('PI was not installed; redeploy with -WithPi or -Modules pi,...')
+    if (Path(state['root']) / 'deployment.lock').exists():
+        raise RuntimeError('Deployment or recovery is still running')
+    mode = args.pi_mode
+    if mode not in pi_modes(state):
+        raise RuntimeError(mode + ' was not installed in this deployment')
+    project = Path(args.project).expanduser().resolve() if args.project else Path(state['root']) / 'projects' / mode
+    if args.project and not project.is_dir():
+        raise RuntimeError('Project directory does not exist: ' + str(project))
+    project.mkdir(parents=True, exist_ok=True)
+    command = [state['node'], state['pi']['cli']]
+    # Shell subcommands must precede session flags. They never contact a model.
+    if args.app_args[:1] != ['mcp']:
+        command += ['--no-skills']
+        if mode == 'coding':
+            command += ['--no-mcp']
+        else:
+            skills = read_json(Path(state['content']) / 'sources.json')['skills']
+            selected = skills.values() if mode in ('seep', 'all') else [skills[mode + '-reverse']]
+            for skill in selected:
+                command += ['--skill', skill]
+    return run([*command, *args.app_args], env=pi_environment(state, mode), cwd=project,
+               check=False, timeout=None, interactive=True).returncode
+
+
 def purge_command(state, surface, command):
     if surface not in state['profiles']:
         raise RuntimeError(surface + ' was not installed in this deployment')
+    if 'purge' not in state['plugins']:
+        raise RuntimeError('Purge was not installed in this deployment')
     shim = Path(state['runtime']) / 'node_modules/.bin' / ('dsh.cmd' if os.name == 'nt' else 'dsh')
     if command in ('apply', 'revert') and not shim.is_file():
         raise RuntimeError('Managed launcher missing; refusing to fall back to a global DSH shim')
@@ -608,44 +826,65 @@ def install(args):
         raise RuntimeError('Python 3.11+ is required')
     node_version = run([executable('node'), '--version'], capture=True).stdout.strip()
     numbers = tuple(int(x) for x in re.findall(r'\d+', node_version)[:3])
-    if numbers < (22, 18, 0):
-        raise RuntimeError('Node.js 22.18+ is required; recommended Node 22 LTS')
+    modules = resolve_modules(args.modules, args.with_pi)
+    minimum = (22, 19, 0) if 'pi' in modules else (22, 18, 0)
+    if numbers < minimum:
+        raise RuntimeError('Node.js ' + '.'.join(map(str, minimum)) + '+ is required')
+    if args.apply_purge and 'purge' not in modules:
+        raise RuntimeError('-ApplyPurge requires the DSH + Purge modules')
+    if (args.with_ida or args.with_playwright) and 'seep' not in modules:
+        raise RuntimeError('-WithIda/-WithPlaywright require the seep module')
+    if (args.install_desktop or args.desktop_exe) and 'dsh' not in modules:
+        raise RuntimeError('Desktop options require the dsh module')
     executable('git')
     executable('npm')
     manifest = read_json(REPO / 'sources.lock.json')
     with deployment_lock(root):
         previous = read_json(root / 'active.json') if (root / 'active.json').exists() else None
-        profiles = ['web'] if args.web_only else ['web', 'desktop']
+        profiles = (['web'] if args.web_only else ['web', 'desktop']) if 'dsh' in modules else []
         desktop, desktop_version = None, None
-        if not args.web_only:
+        if 'desktop' in profiles:
             if args.install_desktop:
                 install_desktop(root, manifest['desktopInstaller'])
             desktop, desktop_version = find_desktop(args.desktop_exe or (previous or {}).get('desktopExe'))
-        sources = {item['id']: source_checkout(root, item) for item in manifest['sources']}
-        runtime = install_runtime(root)
-        python = install_python(root)
+        selected_sources = [item for item in manifest['sources'] if item['id'] in modules]
+        sources = {item['id']: source_checkout(root, item) for item in selected_sources}
+        runtime = install_runtime(root) if 'dsh' in modules else None
+        python = install_python(root) if 'seep' in modules else Path(sys.executable)
         ida_root = os.environ.get('SEEP_IDA_ROOT') or (previous or {}).get('options', {}).get('ida_root')
-        options = {'with_ida': args.with_ida, 'with_playwright': args.with_playwright, 'ida_root': ida_root}
+        options = {'with_ida': args.with_ida, 'with_playwright': args.with_playwright,
+                   'ida_root': ida_root, 'modules': modules}
         if args.with_ida and not ida_root:
             raise RuntimeError('-WithIda requires SEEP_IDA_ROOT pointing to a licensed local IDA installation')
         state = build_generation(root, sources, runtime, python, options)
+        if 'pi' in modules:
+            pi_runtime = install_node_bundle(root, 'pi-runtime')
+            state['pi'] = {'runtime': str(pi_runtime), 'agent': str(root / 'pi/agent'),
+                           'cli': str(pi_runtime / 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js')}
+            pi_version(state)
+        if 'seep' in modules:
+            state['mcpRuntime'] = str(runtime or install_node_bundle(root, 'mcp-runtime'))
         state.update({'dshHome': str(Path(args.dsh_home).resolve()) if args.dsh_home else
                       (previous or {}).get('dshHome', str(root / 'dsh-home')),
                       'profiles': profiles, 'desktopExe': str(desktop) if desktop else None,
                       'desktopVersion': desktop_version, 'release': manifest['release'],
                       'desktopUserData': str(root / 'desktop-user-data'),
-                      'sourceManifest': manifest['sources'],
+                      'sourceManifest': selected_sources,
                       'lockSha256': digest(REPO / 'sources.lock.json'), 'purgeApplied': False})
+        state['removeBundles'] = ['seep-lab'] if (previous and 'seep' in previous.get('plugins', {})
+                                                       and 'seep' not in state['plugins']) else []
         for directory in ('samples', 'workspace', 'tools/apk', 'tools/exe', 'reports'):
             (root / directory).mkdir(parents=True, exist_ok=True)
         transaction = snapshot(state, root, previous)
         state['snapshot'] = str(transaction)
         print('[backup] ' + str(transaction), flush=True)
         try:
-            for plugin in ('seep', 'purge'):
+            for plugin in state['plugins']:
                 check_plugin_import(state, plugin)
             initialize_desktop(state)
             configure_profiles(state)
+            if 'pi' in modules:
+                configure_pi(state)
         except Exception:
             print('[recovery] Restoring profile files and dependencies.', flush=True)
             restore_snapshot(transaction, state)
@@ -667,8 +906,9 @@ def install(args):
                     print(f'[UNVERIFIED] {profile}: disk patch checks completed; verify the live host in its UI.', flush=True)
             state['purgeApplied'] = True
             save_json(root / 'active.json', state)
-        print('[installed] Profiles configured: ' + ', '.join(profiles), flush=True)
-        print('Run doctor.ps1 -ProbeMcp, then start and verify each UI. GUI/API verification is still pending.', flush=True)
+        print('[installed] Modules: ' + ', '.join(modules) + '; DSH profiles: ' + ', '.join(profiles), flush=True)
+        print('Run doctor.ps1 -ProbeMcp, then start the selected entries and verify model requests.' +
+              (' DSH GUI acceptance is still pending.' if profiles else ''), flush=True)
     return 0
 
 
@@ -695,15 +935,17 @@ def doctor(args):
             print('[FAIL] ' + name + ': ' + str(exc), flush=True)
     for item in state.get('sourceManifest', read_json(REPO / 'sources.lock.json')['sources']):
         check('source:' + item['id'], lambda i=item: verify_source(state['sources'][i['id']], i))
-    check('python:mcp', lambda: run([state['python'], '-c', 'import mcp'], capture=True).returncode)
-    for plugin in ('seep', 'purge'):
+    if 'seep' in state['sources']:
+        check('python:mcp', lambda: run([state['python'], '-c', 'import mcp'], capture=True).returncode)
+    for plugin in state['plugins']:
         check('plugin:' + plugin + ':import', lambda p=plugin: check_plugin_import(state, p))
     for profile in state['profiles']:
         def profile_check(p=profile):
             base = Path(state['dshHome']) / 'profiles' / p
             pkg = read_json(base / 'package.json')
             bundles = pkg.get('dsh', {}).get('profile', {}).get('bundles', [])
-            if not {'seep-lab', 'dsh-purge-community'}.issubset(set(bundles)):
+            expected = {'seep': 'seep-lab', 'purge': 'dsh-purge-community'}
+            if not {expected[p] for p in state['plugins']}.issubset(set(bundles)):
                 raise RuntimeError('Missing registered bundles')
             run([state['node'], REPO / 'scripts/profile.mjs', state['runtime'], base / 'cordis.patch.yml'], capture=True)
             if p == 'web':
@@ -718,21 +960,48 @@ def doctor(args):
         check('purge:' + profile, check_purge)
     if 'desktop' in state['profiles']:
         check('desktop:version', lambda: find_desktop(state['desktopExe'])[1])
-    else:
+    elif 'dsh' in modules_of(state):
         report['checks'].append({'name': 'desktop', 'status': 'not-installed', 'detail': 'Explicit -WebOnly deployment'})
     for skill in ('apk-reverse', 'exe-reverse'):
+        if skill.split('-')[0] not in state['sources']:
+            continue
         check('skill:' + skill, lambda s=skill: 'complete' if (Path(state['content']) / 'skill' / s / 'scripts/doctor.py').is_file()
               else (_ for _ in ()).throw(RuntimeError('Skill scripts missing')))
-    if args.probe_mcp:
+    if 'pi' in modules_of(state):
+        check('pi:version', lambda: pi_version(state))
+        def pi_config():
+            agent = Path(state['pi']['agent'])
+            settings, mcp = read_json(agent / 'settings.json'), read_json(agent / 'mcp.json')
+            marker = read_json(agent / 'workbench-managed.json')
+            if not set(marker['extensions']).issubset(settings.get('extensions', [])):
+                raise RuntimeError('PI workbench extension is not registered')
+            if any(mcp.get('mcpServers', {}).get(k) != v for k, v in marker['servers'].items()):
+                raise RuntimeError('PI managed MCP configuration changed')
+            return {'agent': str(agent), 'modes': pi_modes(state), 'modelRequest': 'unverified'}
+        check('pi:config', pi_config)
+        for mode in pi_modes(state):
+            def resources(m=mode):
+                result = run([state['node'], REPO / 'scripts/probe_pi.mjs',
+                              Path(state['root']) / 'active.json', m],
+                             env=pi_environment(state, m), capture=True, timeout=180)
+                data = json.loads(result.stdout)
+                if not data.get('ok'):
+                    raise RuntimeError('PI resource loader did not accept the selected skills/extension')
+                return data
+            check('pi:resources:' + mode, resources)
+        if args.probe_mcp:
+            check('pi:mcp-list', lambda: pi_mcp_check(state))
+    runtime_env = (lambda: environment(state)) if state['profiles'] else (lambda: pi_environment(state, 'all'))
+    if args.probe_mcp and 'seep' in state['sources']:
         for name, command, argv, tool in [
             ('seep', state['python'], [str(Path(state['sources']['seep']) / 'Tool/mcp/seep_mcp_server.py')], 'seep_status'),
-            ('js-reverse', state['node'], [str(Path(state['runtime']) / 'node_modules/js-reverse-mcp/build/src/index.js')], None),
+            ('js-reverse', state['node'], [str(Path(state.get('mcpRuntime') or state['runtime']) / 'node_modules/js-reverse-mcp/build/src/index.js')], None),
         ]:
             def probe(c=command, a=argv, t=tool):
                 cmd = [state['python'], REPO / 'scripts/probe_mcp.py', '--cwd', state['sources']['seep']]
                 if t:
                     cmd += ['--status-tool', t]
-                result = run([*cmd, c, *a], env=environment(state), capture=True, timeout=600, check=False)
+                result = run([*cmd, c, *a], env=runtime_env(), capture=True, timeout=600, check=False)
                 if result.returncode:
                     # Only our bounded JSON diagnostic is exposed, not arbitrary server stderr.
                     cause_types = []
@@ -748,11 +1017,14 @@ def doctor(args):
             check('mcp:' + name, probe)
     if args.deep:
         for skill in ('apk-reverse', 'exe-reverse'):
+            if skill.split('-')[0] not in state['sources']:
+                continue
             # Their stdout is intentionally local; no provider config is involved.
             check('tools:' + skill, lambda s=skill: run([state['python'], Path(state['content']) / 'skill' / s / 'scripts/doctor.py'],
-                                                       env=environment(state), timeout=180).returncode)
-        check('tools:seep', lambda: run([state['python'], Path(state['sources']['seep']) / 'Tool/mcp/tool_resolver.py',
-                                       '--verify', '--json'], env=environment(state), timeout=300).returncode)
+                                                       env=runtime_env(), timeout=180).returncode)
+        if 'seep' in state['sources']:
+            check('tools:seep', lambda: run([state['python'], Path(state['sources']['seep']) / 'Tool/mcp/tool_resolver.py',
+                                           '--verify', '--json'], env=runtime_env(), timeout=300).returncode)
     report['ok'] = not any(c['status'] in ('fail', 'pending', 'unverified') for c in report['checks'])
     destination = Path(state['root']) / 'reports' / ('doctor-' + time.strftime('%Y%m%d-%H%M%S') + '.json')
     save_json(destination, report)
@@ -795,6 +1067,8 @@ def rollback(args):
 
 def capabilities(args):
     state = load_state(args.root)
+    if 'seep' not in state['sources']:
+        raise RuntimeError('Capability groups require the seep module; select pi,seep or the full DSH workbench')
     components = args.components.split(',')
     allowed = {'aotopsy', 'web', 'android', 'scanners'}
     if components == ['all']:
@@ -808,16 +1082,25 @@ def capabilities(args):
                '-ComponentsCsv', ','.join(components)]
         if args.check_only:
             cmd += ['-CheckOnly']
-        run(cmd, env=environment(state), timeout=3600)
+        run(cmd, env=environment(state) if state['profiles'] else pi_environment(state, 'all'), timeout=3600)
     print('Selected capability groups processed. Run doctor.ps1 -Deep and check device/driver prerequisites.')
     return 0
 
 
 def main(argv=None):
+    raw = list(sys.argv[1:] if argv is None else argv)
+    forwarded = []
+    if '--' in raw:
+        index = raw.index('--')
+        raw, forwarded = raw[:index], raw[index + 1:]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('install', 'doctor', 'start', 'rollback', 'purge', 'capabilities'))
+    parser.add_argument('operation', choices=('install', 'doctor', 'start', 'start-pi', 'rollback', 'purge', 'capabilities'))
     parser.add_argument('--root', default=str(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'DSH-Windows-Workbench'))
     parser.add_argument('--dsh-home')
+    parser.add_argument('--modules')
+    parser.add_argument('--with-pi', action='store_true')
+    parser.add_argument('--pi-mode', choices=('coding', 'seep', 'apk', 'exe', 'all'), default='coding')
+    parser.add_argument('--project')
     parser.add_argument('--desktop-exe')
     parser.add_argument('--install-desktop', action='store_true')
     parser.add_argument('--web-only', action='store_true')
@@ -833,23 +1116,25 @@ def main(argv=None):
     parser.add_argument('--surface', choices=('web', 'desktop'), default='web')
     parser.add_argument('--purge-action', choices=('status', 'apply', 'revert', 'host-status', 'selfcheck'), default='status')
     parser.add_argument('app_args', nargs='*')
-    args, extra = parser.parse_known_args(argv)
-    if extra and args.operation != 'start':
-        parser.error('unrecognized arguments: ' + ' '.join(extra))
-    args.app_args += extra
+    args, extra = parser.parse_known_args(raw)
+    if (extra or forwarded) and args.operation not in ('start', 'start-pi'):
+        parser.error('unrecognized arguments: ' + ' '.join(extra + forwarded))
+    args.app_args += extra + forwarded
     if args.operation == 'purge':
         state = load_state(args.root)
         if args.purge_action in ('apply', 'revert'):
             with deployment_lock(Path(state['root'])):
                 return purge_command(state, args.surface, args.purge_action).returncode
         return purge_command(state, args.surface, args.purge_action).returncode
-    return {'install': install, 'doctor': doctor, 'start': start, 'rollback': rollback,
+    return {'install': install, 'doctor': doctor, 'start': start, 'start-pi': start_pi, 'rollback': rollback,
             'capabilities': capabilities}[args.operation](args)
 
 
 if __name__ == '__main__':
     try:
         sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
     except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
         print('[FAILED] ' + str(exc), file=sys.stderr)
         sys.exit(1)

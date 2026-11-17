@@ -10,6 +10,7 @@
 | Angel-Gril/dsh-purge-harness | MIT | 完整插件部署副本，实际包名dsh-purge-community，不通过其bootstrap切换到别的fork |
 | DeepSeek Harness | MIT（npm与官方宿主各自声明为准） | npm包独立安装；桌面从官方地址下载/目标机已有安装 |
 | JS reverse MCP | Apache-2.0 | npm固定3.0.9，保留依赖包许可证 |
+| @earendil-works/pi-coding-agent | MIT | 可选npm固定1.4.0；独立运行时，使用内置MCP；不复制本机上游扩展或全局提示词 |
 
 Seep自带的各工具/知识库/再分发组件还有自己的许可证。分发离线工具包或公开修改版时需逐个核对，不能用本仓库的编排代码许可证覆盖它们。IDA等商业软件及许可证由每台设备自行安装。
 

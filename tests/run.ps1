@@ -15,4 +15,6 @@ $pythonExe = Get-WorkbenchPython
 $env:PYTHONIOENCODING = 'utf-8'
 & $pythonExe -m unittest discover -s (Join-Path $PSScriptRoot '.') -p 'test_*.py' -v
 if ($LASTEXITCODE -ne 0) { throw 'Python tests failed.' }
+& node --test (Join-Path $PSScriptRoot 'pi-workbench.test.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'PI extension tests failed.' }
 Write-Host 'PowerShell syntax and workbench regression tests passed.'

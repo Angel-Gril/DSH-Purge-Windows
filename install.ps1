@@ -8,6 +8,8 @@ param(
     [switch]$WebOnly,
     [switch]$ApplyPurge,
     [switch]$InstallCapabilities,
+    [string[]]$Modules = @(),
+    [switch]$WithPi,
     [switch]$WithIda,
     [switch]$WithPlaywright
 )
@@ -19,6 +21,8 @@ if ($DesktopExe) { $workbenchArgs += @('--desktop-exe', $DesktopExe) }
 if ($InstallDesktop) { $workbenchArgs += '--install-desktop' }
 if ($WebOnly) { $workbenchArgs += '--web-only' }
 if ($ApplyPurge) { $workbenchArgs += '--apply-purge' }
+if ($Modules.Count) { $workbenchArgs += @('--modules', ($Modules -join ',')) }
+if ($WithPi) { $workbenchArgs += '--with-pi' }
 if ($WithIda) { $workbenchArgs += '--with-ida' }
 if ($WithPlaywright) { $workbenchArgs += '--with-playwright' }
 Invoke-Workbench -Arguments $workbenchArgs

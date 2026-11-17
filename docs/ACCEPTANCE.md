@@ -2,6 +2,8 @@
 
 把每项写为 `通过 / 失败 / 未验证 / 不适用（原因）`，不要把未验证写通过。
 
+默认完整工作台按下表验收。自选组件以 active.json 的 modules 为准：PI-only 不要求 DSH/Desktop/Purge；APK/EXE-only 的外部工具需要另装，技能安装和工具可用分别记录。主入口和独立入口的契约见 [USAGE.md](USAGE.md)。
+
 | 层 | 通过证据 |
 | --- | --- |
 | 来源 | 四个完整 SHA 匹配 sources.lock.json；APK/EXE 权限与完整脚本目录存在 |
@@ -17,6 +19,9 @@
 | 工具能力 | doctor -Deep结果与APK/EXE各自doctor逐项核对，缺JDK/签名工具/驱动/硬件明确列出 |
 | 真实模型 | 使用本机配置发一次最小消息，得到正常响应；只记模型、耗时、状态，不记录key |
 | 更新/恢复 | 更新只快进；重复安装不重复配置块；快照可恢复；宿主补丁单独可revert |
+| PI 选装 | 实际版本1.4.0、独立agent目录、所选模式真实资源加载无错误；coding不加载工作台MCP/技能 |
+| PI 工作台 | start-seep/apk/exe 分别启动、技能匹配；lab开关会话内生效；选择Seep时PI原生mcp list握手成功 |
+| PI 模型 | 使用本机配置实际响应，不能用--version/SDK加载/MCP握手替代模型请求 |
 
 命令示例（每条都传你自己的 Root）：
 

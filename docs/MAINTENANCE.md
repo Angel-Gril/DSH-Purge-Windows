@@ -2,6 +2,10 @@
 
 日常设备只运行 `update.ps1 -ApplyPurge`，不要各自在四个来源的 main 上直接 pull，造成无法复现的混装。
 
+PI-only 设备更新省略 ApplyPurge；update 保留 active.json 的 modules。主入口保持 DSH + Purge，独立入口由 PI 启动。`pi-runtime/package-lock.json` 与 `mcp-runtime/package-lock.json` 分别锁定可选 PI 和独立 Seep 所需 JS MCP；它们不能依赖全局 npm 安装。更新时在对应目录运行 `npm install --package-lock-only --ignore-scripts`，不手写 integrity。
+
+PI 新入口验证包括 `tests/integration_pi.py --root <独立新Root> --modules pi,apk,exe`、实际 PI SDK 资源加载、PI 原生 `mcp list`（选 Seep）、配置保留和负向请求。可用 `--source-cache <已验证工作台Root>` 从已有锁定源码复制 Git 对象，仍核对 SHA 与 origin；这不替代新设备的联网拉取验收。不要为自动测试读取真实模型凭据。
+
 维护者为工作台更新基线时：
 
 1. 在干净分支运行 `python scripts/refresh_sources.py --cache C:\AI\Workbench-Source-Review`，它通过目标机 Git 凭据拉源并生成 `sources.candidate.json`，不会自动改现有安装或发布版本。

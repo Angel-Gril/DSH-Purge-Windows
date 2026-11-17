@@ -1,6 +1,6 @@
 # DSH Purge Windows 工作台
 
-从一个仓库安装、更新和检查 **DSH Web + 官方桌面端 + Purge + Seep + APK/EXE 完整技能**。四个项目按 Git commit 拉取，工作台生成接线配置；不需要传整份本机目录。
+主入口是 **DSH Web + 官方桌面端 + Purge**，集成 Seep + APK/EXE 完整技能；**PI 可选**，用于日常编程或独立启动 Seep/APK/EXE 工作台。支持按组件安装。四个项目按 Git commit 拉取，工作台生成接线配置；不需要传整份本机目录。
 
 | 组件 | 固定来源 | 本版基线 |
 | --- | --- | --- |
@@ -10,6 +10,7 @@
 | APK 技能 | [Angel-Gril/apk-reverse-new](https://github.com/Angel-Gril/apk-reverse-new) | `56fee1319b0a` |
 | EXE 技能 | [Angel-Gril/exe-reverse](https://github.com/Angel-Gril/exe-reverse) | `426e994ce5b5` |
 | Purge | [Angel-Gril/dsh-purge-harness](https://github.com/Angel-Gril/dsh-purge-harness) | `dsh-purge-community 1.7.18`，`639c8934b429` |
+| PI（选装） | npm `@earendil-works/pi-coding-agent` | `1.4.0`，独立运行时/配置/会话；与本机 Seep PI 基线一致 |
 
 完整 SHA 在 [sources.lock.json](sources.lock.json)。桌面官方 latest 链接会变化，安装器记录下载 SHA256、验证 Authenticode 签名并检查已安装版本；它不是锁定的二进制镜像。新的宿主版本需要另行兼容验证。
 
@@ -22,23 +23,23 @@
 ```powershell
 git clone https://github.com/Angel-Gril/DSH-Purge-Windows.git "$env:USERPROFILE\DSH-Purge-Windows"
 cd "$env:USERPROFILE\DSH-Purge-Windows"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallDesktop -ApplyPurge -InstallCapabilities
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallDesktop -ApplyPurge -WithPi -InstallCapabilities
 ```
 
-`-InstallDesktop` 下载并打开官方图形安装器，按界面完成后继续。已有兼容桌面宿主时省略它，或传 `-DesktopExe 'D:\Apps\DeepSeek Harness\DeepSeek Harness.exe'`。应用桌面补丁前保存会话并退出客户端；补丁会改动该客户端的宿主文件，使用 `purge.ps1 -Surface desktop -Action revert` 回滚。
+`-WithPi` 附加独立 PI 入口（需要 Node 22.19+），省略时仍是默认完整 DSH 部署。`-InstallDesktop` 下载并打开官方图形安装器，按界面完成后继续。已有兼容桌面宿主时省略它，或传 `-DesktopExe 'D:\Apps\DeepSeek Harness\DeepSeek Harness.exe'`。应用桌面补丁前保存会话并退出客户端；补丁会改动该客户端的宿主文件，使用 `purge.ps1 -Surface desktop -Action revert` 回滚。
 
 独立 desktop profile 首次使用还会打开客户端初始化：完成欢迎页后彻底退出，脚本继续安装两插件。桌面用户数据也独立存放，后续用 `start-desktop.ps1` 进入同一工作台。
 
 缺基础环境时，可先下载本仓库 `bootstrap.ps1`，运行：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -InstallPrerequisites -InstallDesktop -ApplyPurge -InstallCapabilities
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -InstallPrerequisites -InstallDesktop -ApplyPurge -WithPi -InstallCapabilities
 ```
 
 也可用一条 PowerShell 命令下载引导器并部署（官方桌面安装器仍可能需要界面操作）：
 
 ```powershell
-$p = Join-Path $env:TEMP 'DSH-Workbench-bootstrap.ps1'; Invoke-WebRequest 'https://raw.githubusercontent.com/Angel-Gril/DSH-Purge-Windows/main/bootstrap.ps1' -OutFile $p; powershell -NoProfile -ExecutionPolicy Bypass -File $p -InstallPrerequisites -InstallDesktop -ApplyPurge -InstallCapabilities
+$p = Join-Path $env:TEMP 'DSH-Workbench-bootstrap.ps1'; Invoke-WebRequest 'https://raw.githubusercontent.com/Angel-Gril/DSH-Purge-Windows/main/bootstrap.ps1' -OutFile $p; powershell -NoProfile -ExecutionPolicy Bypass -File $p -InstallPrerequisites -InstallDesktop -ApplyPurge -WithPi -InstallCapabilities
 ```
 
 raw引导器适用于能直接下载脚本的仓库。若部署仓库为私有，使用上面的Git clone方式；Git Credential Manager的登录不会自动提供给Invoke-WebRequest。
@@ -61,6 +62,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start-desktop.ps1
 
 Seep 新版实验纪律按会话切换：发 `lab：` 开启，`退出实验` 关闭，新会话默认关闭。不会再复制旧机器 `~/.dsh/AGENTS.md` 中的强制常驻提示词。
 
+## 独立使用与组件选择
+
+```powershell
+# 默认 DSH 完整安装加 PI 后，可分别启动独立工作台
+.\start-seep.ps1
+.\start-apk.ps1
+.\start-exe.ps1
+# 普通编程，不加载工作台技能/MCP
+.\start-pi.ps1 -Project 'D:\Code\MyApp'
+# 只部署 PI + 三套独立工作台，不安装 DSH/Purge/Desktop
+.\install.ps1 -Root 'C:\AI\PiWorkbench' -Modules pi,seep,apk,exe
+# 只部署 PI + APK，工具按目标机需要补充
+.\install.ps1 -Root 'C:\AI\ApkWorkbench' -Modules pi,apk
+```
+
+完整选项表、模型接线、工作流和开发方式见 [具体使用指南](docs/USAGE.md)。更新保留安装时选择的组件。`-Modules` 表示完整选择；`capabilities.ps1 -Components` 是外部工具组，二者用途不同。
+
 ## 更新和恢复
 
 ```powershell
@@ -75,4 +93,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\rollback.ps1 -RevertPurge
 
 自定义 `-Root` 后所有命令都传同一 Root。`-WebOnly` 只做 Web，报告会明确标记桌面未安装，不能作为完整工作台验收。默认安装启用插件；只有 `-ApplyPurge` 才主动套用宿主补丁。Purge 自动应用/自动更新关闭，由统一更新命令负责。
 
-请继续阅读 [完整部署、迁移与故障处理](docs/DEPLOYMENT.md)、[交给其他 AI 的任务说明](docs/AI-HANDOFF.md)、[验收清单](docs/ACCEPTANCE.md)、[来源与许可证](THIRD-PARTY.md)。测试的实际覆盖范围记录在 [验证记录](docs/VALIDATION.md)。
+请继续阅读 [具体使用指南](docs/USAGE.md)、[完整部署、迁移与故障处理](docs/DEPLOYMENT.md)、[交给其他 AI 的任务说明](docs/AI-HANDOFF.md)、[验收清单](docs/ACCEPTANCE.md)、[来源与许可证](THIRD-PARTY.md)。测试的实际覆盖范围记录在 [验证记录](docs/VALIDATION.md)。

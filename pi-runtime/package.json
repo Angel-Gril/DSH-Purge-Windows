@@ -1,0 +1,6 @@
+{
+  "name": "dsh-workbench-optional-pi",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {"@earendil-works/pi-coding-agent": "1.4.0"}
+}

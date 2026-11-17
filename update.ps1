@@ -15,6 +15,7 @@ $stateRoot = if ($Root) { $Root } else { Join-Path $env:LOCALAPPDATA 'DSH-Window
 $active = Join-Path $stateRoot 'active.json'
 if (-not (Test-Path -LiteralPath $active)) { throw 'No existing deployment. Run install.ps1 first.' }
 $state = Get-Content -LiteralPath $active -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($state.modules) { $workbenchArgs += @('--modules', ($state.modules -join ',')) }
 if ($state.profiles -notcontains 'desktop') { $workbenchArgs += '--web-only' }
 if ($state.desktopExe) { $workbenchArgs += @('--desktop-exe', [string]$state.desktopExe) }
 if ($state.options.with_ida) { $workbenchArgs += '--with-ida' }

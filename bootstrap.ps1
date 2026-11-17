@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param([string]$Checkout = (Join-Path $env:USERPROFILE 'DSH-Purge-Windows'),
       [string]$Root = '', [switch]$InstallPrerequisites, [switch]$InstallDesktop,
-      [switch]$ApplyPurge, [switch]$InstallCapabilities)
+      [switch]$ApplyPurge, [switch]$InstallCapabilities,
+      [string[]]$Modules = @(), [switch]$WithPi, [switch]$WebOnly)
 $ErrorActionPreference = 'Stop'
 if ($InstallPrerequisites) {
     $prerequisites = @(
@@ -24,7 +25,7 @@ if ($InstallPrerequisites) {
                     while ($parts.Count -lt 3) { $parts += '0' }
                     $version = [version]($parts -join '.')
                     $minimum = switch ($item.Command) {
-                        'node.exe' { [version]'22.18.0' }
+                        'node.exe' { [version]'22.19.0' }
                         'python.exe' { [version]'3.11.0' }
                         'java.exe' { [version]'17.0.0' }
                         default { [version]'2.0.0' }
@@ -48,4 +49,7 @@ if ($Root) { $parameters.Root = $Root }
 if ($InstallDesktop) { $parameters.InstallDesktop = $true }
 if ($ApplyPurge) { $parameters.ApplyPurge = $true }
 if ($InstallCapabilities) { $parameters.InstallCapabilities = $true }
+if ($Modules) { $parameters.Modules = $Modules }
+if ($WithPi) { $parameters.WithPi = $true }
+if ($WebOnly) { $parameters.WebOnly = $true }
 & (Join-Path $Checkout 'install.ps1') @parameters

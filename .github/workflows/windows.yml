@@ -11,6 +11,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: PowerShell 5.1 syntax and regression tests
         shell: powershell
         run: .\tests\run.ps1

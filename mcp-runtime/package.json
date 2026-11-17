@@ -1,0 +1,6 @@
+{
+  "name": "dsh-workbench-standalone-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {"js-reverse-mcp": "3.0.9"}
+}

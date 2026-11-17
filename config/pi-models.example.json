@@ -1,0 +1,19 @@
+{
+  "providers": {
+    "workbench-gateway": {
+      "baseUrl": "https://YOUR-GATEWAY.example/v1",
+      "api": "openai-completions",
+      "apiKey": "${WORKBENCH_API_KEY}",
+      "models": [
+        {
+          "id": "YOUR-MODEL-ID",
+          "name": "Workbench model",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 65536,
+          "maxTokens": 8192
+        }
+      ]
+    }
+  }
+}
