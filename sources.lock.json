@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "release": "2026.11.17",
+  "sources": [
+    {"id":"seep","url":"https://github.com/angusdevgo/Seep-Reverse-Lab.git","branch":"main","commit":"1ea9399ccb4dd8db5849a5ff62d963bf4abbe35e","version":"1.15.0","license":"GPL-3.0-or-later"},
+    {"id":"apk","url":"https://github.com/Angel-Gril/apk-reverse-new.git","branch":"main","commit":"56fee1319b0ac4948083a5158d38f15e3fbc0f71","skill":"skills/apk-reverse","license":"MIT"},
+    {"id":"exe","url":"https://github.com/Angel-Gril/exe-reverse.git","branch":"main","commit":"426e994ce5b5e6cb6906ca7a243c2cb0a48ae2b4","skill":"skills/exe-reverse","license":"MIT"},
+    {"id":"purge","url":"https://github.com/Angel-Gril/dsh-purge-harness.git","branch":"master","commit":"639c8934b4298d072762dd7094eafbddeebcfb6e","package":"dsh-purge-community","version":"1.7.18","license":"MIT"}
+  ],
+  "desktopInstaller": "https://download.deepseek.com/desktop/dsh-latest-windows-x64.exe"
+}

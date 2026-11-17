@@ -1,0 +1,17 @@
+.workbench/
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+*.local.json
+reports/
+*.log
+*.zip
+*.tgz
+*.asar
+samples/
+workspace/
+sources.candidate.json

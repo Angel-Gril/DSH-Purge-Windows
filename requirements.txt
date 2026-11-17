@@ -1,0 +1,2 @@
+# Core stdio MCP SDK. Seep explicitly requires >=1.20,<1.29.
+mcp==1.28.1

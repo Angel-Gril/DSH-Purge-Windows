@@ -1,0 +1,21 @@
+name: Windows workbench checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  unit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: PowerShell 5.1 syntax and regression tests
+        shell: powershell
+        run: .\tests\run.ps1
+      - name: Check committed source inventory
+        shell: powershell
+        run: |
+          $forbidden = git ls-files | Where-Object { $_ -match '(^|/)(\.env($|\.)|node_modules/|samples/|workspace/)' }
+          if ($forbidden) { throw ($forbidden -join "`n") }
